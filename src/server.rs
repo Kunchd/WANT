@@ -1,10 +1,20 @@
+use std::net::SocketAddr;
+
 use tonic::{transport::Server, Request, Response, Status};
 
 use sim::service_server::{Service, ServiceServer};
 use sim::{HelloRequest, HelloResponse};
 
+use clap::Parser;
+
 pub mod sim {
     tonic::include_proto!("sim");
+}
+
+#[derive(Debug, Parser)]
+struct Opt {
+    #[clap(long)]
+    server_addr: SocketAddr
 }
 
 #[derive(Debug, Default)]
@@ -28,7 +38,8 @@ impl Service for MyService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse()?;
+    let opt = Opt::parse();
+    let addr = opt.server_addr;
     let service = MyService::default();
 
     Server::builder()
