@@ -3,7 +3,19 @@ syntax = "proto3";
 package sim;
 
 service Service {
+    rpc HandleClientRequest (ClientRequest) returns (ClientResponse) {}
     rpc SayHello (HelloRequest) returns (HelloResponse) {}
+}
+
+message ClientRequest {
+    string key = 1;
+    string value = 2;
+    uint32 sn = 3;
+}
+
+message ClientResponse {
+    string result = 1;
+    uint32 sn = 2;
 }
 
 message HelloRequest {
