@@ -2,9 +2,24 @@ syntax = "proto3";
 
 package sim;
 
+import "google/protobuf/empty.proto";
+
 service Service {
-    rpc HandleClientRequest (ClientRequest) returns (ClientResponse) {}
+    rpc HandleClientRequest (ClientRequest) returns (google.protobuf.Empty) {}
+    rpc HandleP2a (P2a) returns (P2b) {}
+    rpc HandleP2b (P2b) returns (google.protobuf.Empty) {}
     rpc SayHello (HelloRequest) returns (HelloResponse) {}
+}
+
+message P2b {
+    ClientRequest request = 1;
+    uint32 slot_num = 2;
+    uint32 server_id = 3;
+}
+
+message P2a {
+    ClientRequest request = 1;
+    uint32 slot_num = 2;
 }
 
 message ClientRequest {
