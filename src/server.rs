@@ -1,6 +1,7 @@
 use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 use sim::service_client::ServiceClient;
+use tokio::join;
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
@@ -23,7 +24,7 @@ struct Opt {
     #[clap(long)]
     server_addr: SocketAddr,
     
-    #[clap(long)]
+    #[clap(long, value_parser, num_args = 1.., value_delimiter = ' ')]
     follower_addrs: Vec<SocketAddr>
 }
 
@@ -82,6 +83,8 @@ impl Service for PaxosService {
         &self,
         request: Request<P2a>
     ) -> Result<Response<P2b>, Status> {
+        println!("Got a p2a");
+
         let p2a = request.into_inner();
         Ok(Response::new(P2b {
             request: p2a.request,
@@ -94,6 +97,8 @@ impl Service for PaxosService {
         &self,
         request: Request<P2b>
     ) -> Result<Response<()>, Status> {
+        println!("Got a p2b: {:?}", request);
+
         // record p2b ack
         let p2b = request.into_inner();
         self.slot_votes.get(&p2b.slot_num).unwrap().insert(p2b.server_id);
@@ -126,6 +131,8 @@ impl Service for PaxosService {
         &self,
         request: Request<sim::ClientRequest>
     ) -> Result<Response<()>, Status> {
+        println!("Got a client request: {:?}", request);
+
         let client_request = ClientRequest::try_from(request.into_inner()).unwrap();
 
         // lock s_in to update it
@@ -186,13 +193,35 @@ impl Service for PaxosService {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::parse();
-    let addr = opt.server_addr;
-    let service = PaxosService::default();
+    let leader = PaxosService { 
+        application: DashMap::new(), 
+        log: DashMap::new(), 
+        slot_votes: DashMap::new(), 
+        slot_in: Arc::from(Mutex::new(0)),
+        slot_out: Arc::from(Mutex::new(0)), 
+        server_id: 0, 
+        follower_addrs: opt.follower_addrs.clone()
+    };
 
-    Server::builder()
-        .add_service(ServiceServer::new(service))
-        .serve(addr)
-        .await?;
+    let follower1 = PaxosService { 
+        application: DashMap::new(), 
+        log: DashMap::new(), 
+        slot_votes: DashMap::new(), 
+        slot_in: Arc::from(Mutex::new(0)),
+        slot_out: Arc::from(Mutex::new(0)), 
+        server_id: 1, 
+        follower_addrs: Vec::new(),
+    };
+
+    let (_, _) = join!(
+        Server::builder()
+        .add_service(ServiceServer::new(leader))
+        .serve(opt.server_addr),
+
+        Server::builder()
+        .add_service(ServiceServer::new(follower1))
+        .serve(opt.follower_addrs.get(0).unwrap().clone())
+    );
 
     Ok(())
 }
