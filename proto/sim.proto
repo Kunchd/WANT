@@ -6,19 +6,21 @@ import "google/protobuf/empty.proto";
 
 service Service {
     rpc HandleClientRequest (ClientRequest) returns (google.protobuf.Empty) {}
-    rpc HandleP2a (P2a) returns (P2b) {}
+    rpc HandleP2a (P2a) returns (google.protobuf.Empty) {}
     rpc HandleP2b (P2b) returns (google.protobuf.Empty) {}
     rpc SayHello (HelloRequest) returns (HelloResponse) {}
 }
 
+service Worker {
+    rpc HandleClientReply (ClientResponse) returns (google.protobuf.Empty) {}
+}
+
 message P2b {
-    ClientRequest request = 1;
     uint32 slot_num = 2;
     uint32 server_id = 3;
 }
 
 message P2a {
-    ClientRequest request = 1;
     uint32 slot_num = 2;
 }
 
@@ -26,6 +28,7 @@ message ClientRequest {
     string key = 1;
     string value = 2;
     uint32 sn = 3;
+    string worker_addr = 4;
 }
 
 message ClientResponse {

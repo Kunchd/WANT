@@ -1,6 +1,8 @@
 use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 use sim::service_client::ServiceClient;
+use sim::worker_client::WorkerClient;
+
 use tokio::join;
 use std::net::SocketAddr;
 use std::sync::{
@@ -32,14 +34,20 @@ struct Opt {
 pub struct ClientRequest {
     pub key: String,
     pub value: String,
-    pub sn: u32
+    pub sn: u32,
+    pub worker_addr: SocketAddr
 }
 
 impl TryFrom<sim::ClientRequest> for ClientRequest {
     type Error = anyhow::Error;
 
     fn try_from(value: sim::ClientRequest) -> Result<Self, Self::Error> {
-        Ok(Self { key: value.key, value: value.value, sn: value.sn })
+        Ok(Self { 
+            key: value.key, 
+            value: value.value, 
+            sn: value.sn, 
+            worker_addr: value.worker_addr.parse().unwrap()
+        })
     }
 }
 
@@ -48,7 +56,8 @@ impl Into<sim::ClientRequest> for ClientRequest {
         sim::ClientRequest {
             key: self.key,
             value: self.value,
-            sn: self.sn
+            sn: self.sn,
+            worker_addr: self.worker_addr.to_string()
         }
     }
 }
@@ -61,7 +70,34 @@ pub struct PaxosService {
     slot_in: Arc<Mutex<u32>>,
     slot_out: Arc<Mutex<u32>>,
     server_id: u32,
-    follower_addrs: Vec<SocketAddr>
+    follower_addrs: Vec<SocketAddr>,
+    server_addr_map: DashMap<u32, SocketAddr>
+}
+
+impl PaxosService {
+    pub async fn send_p2a(target: SocketAddr, p2a: P2a) -> anyhow::Result<()> {
+        let mut client = ServiceClient::connect(format!("http://{}", target)).await?;
+        let p2a = tonic::Request::new(p2a);
+        client.handle_p2a(p2a).await?;
+
+        Ok(())
+    }
+
+    pub async fn send_p2b(target: SocketAddr, p2b: P2b) -> anyhow::Result<()> {
+        let mut client = ServiceClient::connect(format!("http://{}", target)).await?;
+        let p2b = tonic::Request::new(p2b);
+        client.handle_p2b(p2b).await?;
+
+        Ok(())
+    }
+
+    pub async fn send_client_reply(target: SocketAddr, client_response: ClientResponse) -> anyhow::Result<()> {
+        let mut client = WorkerClient::connect(format!("http://{}", target)).await?;
+        let client_response = tonic::Request::new(client_response);
+        client.handle_client_reply(client_response).await?;
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -70,7 +106,7 @@ impl Service for PaxosService {
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloResponse>, Status> {
-        println!("Got a request: {:?}", request);
+        println!("Got a Hello request");
 
         let reply = HelloResponse {
             message: format!("Hello, {}!", request.into_inner().name),
@@ -82,31 +118,37 @@ impl Service for PaxosService {
     async fn handle_p2a(
         &self,
         request: Request<P2a>
-    ) -> Result<Response<P2b>, Status> {
-        println!("Got a p2a");
-
+    ) -> Result<Response<()>, Status> {
         let p2a = request.into_inner();
-        Ok(Response::new(P2b {
-            request: p2a.request,
+        println!("Server: {} Got a p2a: {:?}", self.server_id, p2a.clone());
+
+        
+        let response = P2b {
             slot_num: p2a.slot_num,
             server_id: self.server_id
-        }))
+        };
+
+        // The leader id is hardcoded to 0
+        PaxosService::send_p2b(self.server_addr_map.get(&0).unwrap().clone(), response).await.expect("Failed to send p2b");
+
+        Ok(Response::new(()))
     }
 
     async fn handle_p2b(
         &self,
         request: Request<P2b>
     ) -> Result<Response<()>, Status> {
-        println!("Got a p2b: {:?}", request);
+        let p2b = request.into_inner();
+        println!("Server {} Got a p2b: {:?}", self.server_id, p2b.clone());
 
         // record p2b ack
-        let p2b = request.into_inner();
         self.slot_votes.get(&p2b.slot_num).unwrap().insert(p2b.server_id);
 
         // update slot out until we've reached first non-chosen value
         let mut slot_out = self.slot_out.lock().unwrap();
-        while self.slot_votes.get(&slot_out).unwrap().len() > 1 {
-            let request = self.log.get(&slot_out).unwrap();
+        let slot_in = self.slot_in.lock().unwrap();
+        while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() > 1 {
+            let request = self.log.get(&slot_out).unwrap().clone();
             // execute command
             let mut client_response = ClientResponse {
                 result : String::from(""),
@@ -119,7 +161,11 @@ impl Service for PaxosService {
                 self.application.insert(request.key.clone(), request.value.clone());
                 client_response.result = String::from("Put ok");
             }
-            // TODO: send response to client
+
+            tokio::spawn(async move {
+                PaxosService::send_client_reply(request.worker_addr, client_response)
+                    .await.expect("Failed to send client response");
+            });
 
             *slot_out += 1;
         }
@@ -131,9 +177,8 @@ impl Service for PaxosService {
         &self,
         request: Request<sim::ClientRequest>
     ) -> Result<Response<()>, Status> {
-        println!("Got a client request: {:?}", request);
-
         let client_request = ClientRequest::try_from(request.into_inner()).unwrap();
+        println!("Got a client request: {:?}", client_request);
 
         // lock s_in to update it
         let mut slot_in = self.slot_in.lock().unwrap();
@@ -147,52 +192,35 @@ impl Service for PaxosService {
         // NOTE: since we haven't sent any p2as yet, initializing the set here should be ok
         let set = DashSet::<u32>::new();
         set.insert(self.server_id);
+        println!("Server {} inserting slot {}", self.server_id, s_in);
         self.slot_votes.insert(s_in, set);
         // record self as ack by default
 
         // send out p2as to get slot chosen
         self.follower_addrs.iter().for_each(|&addr| {
-            let cr = client_request.clone();
             tokio::spawn(async move {
-                let mut client = ServiceClient::connect(format!("http://{}", addr)).await.unwrap();
-
-                let p2a = tonic::Request::new(P2a {
-                    request: Some(cr.into()),
+                PaxosService::send_p2a(addr, P2a {
                     slot_num: s_in
-                });
-
-                client.handle_p2a(p2a).await.unwrap();
+                }).await.expect("Failed to send p2a");
             });
         });
 
         Ok(Response::new(()))
-
-        // if majority is reached, execute on application
-
-        // println!("Got a client request: {:?}", request);
-        // let client_request = request.into_inner();
-        // let key = client_request.key;
-        // let value = client_request.value;
-
-        // let mut client_response = ClientResponse {
-        //     result : String::from(""),
-        //     sn: client_request.sn
-        // };
-
-        // if value == "" {
-        //     client_response.result = self.application.get(&key).unwrap().clone();
-        // } else {
-        //     self.application.insert(key, value);
-        //     client_response.result = String::from("Put ok");
-        // }
-
-        // Ok(Response::new(client_response))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::parse();
+
+    // construct addr map
+    let addr_map = DashMap::new();
+    addr_map.insert(0, opt.server_addr);
+    opt.follower_addrs.iter().enumerate().for_each(|(i, &addr)| {
+        addr_map.insert((i + 1) as u32, addr);
+    });
+
+    // Leader will have default if of 0
     let leader = PaxosService { 
         application: DashMap::new(), 
         log: DashMap::new(), 
@@ -200,7 +228,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slot_in: Arc::from(Mutex::new(0)),
         slot_out: Arc::from(Mutex::new(0)), 
         server_id: 0, 
-        follower_addrs: opt.follower_addrs.clone()
+        follower_addrs: opt.follower_addrs.clone(),
+        server_addr_map: addr_map.clone()
     };
 
     let follower1 = PaxosService { 
@@ -211,6 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slot_out: Arc::from(Mutex::new(0)), 
         server_id: 1, 
         follower_addrs: Vec::new(),
+        server_addr_map: addr_map.clone()
     };
 
     let (_, _) = join!(
