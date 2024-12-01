@@ -16,12 +16,14 @@ service Worker {
 }
 
 message P2b {
-    uint32 slot_num = 2;
-    uint32 server_id = 3;
+    uint32 slot_num = 1;
+    uint32 server_id = 2;
+    bytes trace = 3;
 }
 
 message P2a {
-    uint32 slot_num = 2;
+    uint32 slot_num = 1;
+    bytes trace = 2;
 }
 
 message ClientRequest {
