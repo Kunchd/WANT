@@ -160,7 +160,6 @@ impl Service for PaxosService {
         // update slot out until we've reached first non-chosen value
         while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() > (self.follower_addrs.len() + 1) / 2 {
             let trace = self.log.get(&slot_out).unwrap().clone();
-            println!("Executing trace: {:?}", trace);
             // execute trace in order
             for cut in trace.iter() {
                 let mut cur_tasks = JoinSet::new();
@@ -182,10 +181,8 @@ impl Service for PaxosService {
                             client_response.result = String::from("Put ok");
                         }
 
-                        // tokio::spawn(async move {
                         PaxosService::send_client_reply(request.worker_addr, client_response)
                             .await.expect("Failed to send client response");
-                        // });
                     });
                 });
 

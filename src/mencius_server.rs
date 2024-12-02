@@ -5,6 +5,7 @@ use sim::worker_client::WorkerClient;
 
 use tokio::task::JoinSet;
 use tokio::sync::Mutex;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -108,6 +109,64 @@ impl MenciusService {
 
         Ok(())
     }
+
+    pub fn get_trace(&self, start_slot: u32, end_lot: u32) -> anyhow::Result<Vec<HashMap<String, ClientRequest>>> {
+        let mut trace: Vec<HashMap<String, ClientRequest>> = Vec::new();
+
+        (start_slot..end_lot).for_each(|slot| {
+            let request = self.log.get(&slot).unwrap();
+            let mut i = 0;
+            if trace.is_empty() {
+                trace.push(HashMap::new());
+            }
+            // Inv: trace[i] is not None
+            while trace.get(i).unwrap().contains_key(&request.key) {
+                i += 1;
+                if i == trace.len() {
+                    trace.push(HashMap::new());
+                }
+            }
+            // Inv: trace[i] is the first trace that doesn't contain request.key
+            trace.get_mut(i).unwrap().insert(request.key.clone(), request.clone());
+        });
+
+        Ok(trace)
+    }
+
+    pub async fn execute_trace(&self, trace: Vec<HashMap<String, ClientRequest>>) -> Result<(), Box<dyn std::error::Error>> {
+        // execute trace in order
+        for cut in trace.iter() {
+            let mut cur_tasks = JoinSet::new();
+
+            cut.clone().values().for_each(|request| {
+                let request = request.clone();
+                let application_clone = self.application.clone();
+                cur_tasks.spawn(async move {
+                    let request = request.clone();
+                    let mut client_response = ClientResponse {
+                        result : String::from(""),
+                        sn: request.sn
+                    };
+
+                    if request.value == "" {
+                        client_response.result = application_clone.get(&request.key).unwrap().clone();
+                    } else {
+                        application_clone.insert(request.key.clone(), request.value.clone());
+                        client_response.result = String::from("Put ok");
+                    }
+
+                    MenciusService::send_client_reply(request.worker_addr, client_response)
+                        .await.expect("Failed to send client response");
+                });
+            });
+
+            while let Some(res) = cur_tasks.join_next().await {
+                res.expect("Failed to join task");
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -168,25 +227,8 @@ impl Service for MenciusService {
         }
 
         // execute from old_slot_out to slot_out
-        for i in old_slot_out..*slot_out {
-            let request = self.log.get(&i).unwrap();
-
-            let request = request.clone();
-            let mut client_response = ClientResponse {
-                result : String::from(""),
-                sn: request.sn
-            };
-
-            if request.value == "" {
-                client_response.result = self.application.get(&request.key).unwrap().clone();
-            } else {
-                self.application.insert(request.key.clone(), request.value.clone());
-                client_response.result = String::from("Put ok");
-            }
-
-            // send the response to the worker if this is our coordination instance
-            MenciusService::send_client_reply(request.worker_addr, client_response).await.expect("Failed to send client response");
-        }
+        let trace = self.get_trace(old_slot_out, *slot_out).expect("Failed to get trace");
+        self.execute_trace(trace).await.expect("Failed to execute trace");
 
         Ok(Response::new(()))
     }
