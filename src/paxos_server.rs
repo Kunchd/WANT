@@ -166,7 +166,7 @@ impl Service for PaxosService {
         self.slot_votes.get(&p2b.slot_num).unwrap().insert(p2b.server_id);
 
         // update slot out until we've reached first non-chosen value
-        while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() > (self.follower_addrs.len() + 1) / 2 {
+        while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() >= (self.follower_addrs.len() + 1) / 2 + 1 {
             let trace = self.log.get(&slot_out).unwrap().clone();
             // execute trace in order
             for cut in trace.iter() {
