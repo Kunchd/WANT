@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
+name = "mencius-server"
+path = "src/mencius_server.rs"
+
+[[bin]]
 name = "paxos-server"
 path = "src/paxos_server.rs"
 

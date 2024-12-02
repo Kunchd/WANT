@@ -8,7 +8,6 @@ service Service {
     rpc HandleClientRequest (ClientRequest) returns (google.protobuf.Empty) {}
     rpc HandleP2a (P2a) returns (google.protobuf.Empty) {}
     rpc HandleP2b (P2b) returns (google.protobuf.Empty) {}
-    rpc SayHello (HelloRequest) returns (HelloResponse) {}
 }
 
 service Worker {
@@ -18,12 +17,13 @@ service Worker {
 message P2b {
     uint32 slot_num = 1;
     uint32 server_id = 2;
-    bytes trace = 3;
+    bytes data = 3;
 }
 
 message P2a {
     uint32 slot_num = 1;
-    bytes trace = 2;
+    uint32 server_id = 2;
+    bytes data = 3;
 }
 
 message ClientRequest {
@@ -36,12 +36,4 @@ message ClientRequest {
 message ClientResponse {
     string result = 1;
     uint32 sn = 2;
-}
-
-message HelloRequest {
-    string name = 1;
-}
-
-message HelloResponse {
-    string message = 1;
 }

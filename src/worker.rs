@@ -37,7 +37,7 @@ impl Worker for WorkloadWorker {
         &self,
         response: Request<ClientResponse>
     ) -> Result<Response<()>, Status> {
-        println!("Woker received client response: {:?}", response.into_inner());
+        println!("Worker received client response: {:?}", response.into_inner());
         Ok(Response::new(()))
     }
 }

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tonic::{transport::Server, Request, Response, Status};
 
 use sim::service_server::{Service, ServiceServer};
-use sim::{ClientResponse, HelloRequest, HelloResponse, P2a, P2b};
+use sim::{ClientResponse, P2a, P2b};
 
 use clap::Parser;
 
@@ -121,18 +121,6 @@ impl PaxosService {
 
 #[tonic::async_trait]
 impl Service for PaxosService {
-    async fn say_hello(
-        &self,
-        request: Request<HelloRequest>,
-    ) -> Result<Response<HelloResponse>, Status> {
-        println!("Got a Hello request");
-
-        let reply = HelloResponse {
-            message: format!("Hello, {}!", request.into_inner().name),
-        };
-
-        Ok(Response::new(reply))
-    }
 
     async fn handle_p2a(
         &self,
@@ -145,7 +133,7 @@ impl Service for PaxosService {
         let response = P2b {
             slot_num: p2a.slot_num,
             server_id: self.server_id,
-            trace: p2a.trace
+            data: p2a.data
         };
 
         // The leader id is hardcoded to 0
@@ -170,7 +158,7 @@ impl Service for PaxosService {
         self.slot_votes.get(&p2b.slot_num).unwrap().insert(p2b.server_id);
 
         // update slot out until we've reached first non-chosen value
-        while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() > 1 {
+        while *slot_out < *slot_in && self.slot_votes.get(&slot_out).unwrap().len() > (self.follower_addrs.len() + 1) / 2 {
             let trace = self.log.get(&slot_out).unwrap().clone();
             println!("Executing trace: {:?}", trace);
             // execute trace in order
@@ -246,17 +234,19 @@ impl Service for PaxosService {
                 trace.get_mut(i).unwrap().insert(request.key.clone(), request.clone());
             });
 
+            let server_id = self.server_id;
+
             // send p2a to get trace chosen
             let mut slot_in = self.slot_in.lock().await;
             let s_in = slot_in.clone();
-            *slot_in += 1;  
+            *slot_in += 1;
 
             self.log.insert(s_in, trace.clone());
 
             // update vote map to non-empty dashset
             // NOTE: since we haven't sent any p2as yet, initializing the set here should be ok
             let set = DashSet::<u32>::new();
-            set.insert(self.server_id); // leader acks by default
+            set.insert(server_id); // leader acks by default
             self.slot_votes.insert(s_in, set);
 
             // send out p2as to get slot chosen
@@ -265,7 +255,8 @@ impl Service for PaxosService {
                 tokio::spawn(async move {
                     PaxosService::send_p2a(addr, P2a {
                         slot_num: s_in,
-                        trace: bincode::serialize(&tr).unwrap()
+                        server_id: server_id,
+                        data: bincode::serialize(&tr).unwrap()
                     }).await.expect("Failed to send p2a");
                 });
             });
