@@ -4,12 +4,11 @@ use sim::service_client::ServiceClient;
 use sim::worker_client::WorkerClient;
 
 use tokio::join;
+use tokio::task::JoinSet;
+use tokio::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
 
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -80,7 +79,7 @@ impl Into<sim::ClientRequest> for ClientRequest {
 
 #[derive(Debug, Default)]
 pub struct PaxosService {
-    application: DashMap<String, String>,
+    application: Arc<DashMap<String, String>>,
     log: DashMap<u32, Vec<HashMap<String, ClientRequest>>>,
     slot_votes: DashMap<u32, DashSet<u32>>,
     slot_in: Arc<Mutex<u32>>,
@@ -164,8 +163,8 @@ impl Service for PaxosService {
         println!("Server {} Got a p2b for slot {} from server {}", self.server_id, p2b.slot_num, p2b.server_id);
 
         // obtain locks in correct ordering
-        let slot_in = self.slot_in.lock().unwrap();
-        let mut slot_out = self.slot_out.lock().unwrap();
+        let slot_in = self.slot_in.lock().await;
+        let mut slot_out = self.slot_out.lock().await;
 
         // record p2b ack
         self.slot_votes.get(&p2b.slot_num).unwrap().insert(p2b.server_id);
@@ -175,30 +174,40 @@ impl Service for PaxosService {
             let trace = self.log.get(&slot_out).unwrap().clone();
             println!("Executing trace: {:?}", trace);
             // execute trace in order
-            trace.iter().for_each(|cut| {
+            for cut in trace.iter() {
+                let mut cur_tasks = JoinSet::new();
+
                 cut.clone().values().for_each(|request| {
                     let request = request.clone();
-                    let mut client_response = ClientResponse {
-                        result : String::from(""),
-                        sn: request.sn
-                    };
+                    let application_clone = self.application.clone();
+                    cur_tasks.spawn(async move {
+                        let request = request.clone();
+                        let mut client_response = ClientResponse {
+                            result : String::from(""),
+                            sn: request.sn
+                        };
 
-                    if request.value == "" {
-                        client_response.result = self.application.get(&request.key).unwrap().clone();
-                    } else {
-                        self.application.insert(request.key.clone(), request.value.clone());
-                        client_response.result = String::from("Put ok");
-                    }
+                        if request.value == "" {
+                            client_response.result = application_clone.get(&request.key).unwrap().clone();
+                        } else {
+                            application_clone.insert(request.key.clone(), request.value.clone());
+                            client_response.result = String::from("Put ok");
+                        }
 
-                    tokio::spawn(async move {
+                        // tokio::spawn(async move {
                         PaxosService::send_client_reply(request.worker_addr, client_response)
                             .await.expect("Failed to send client response");
+                        // });
                     });
                 });
-            });
+
+                while let Some(res) = cur_tasks.join_next().await {
+                    res.expect("Failed to join task");
+                }
+            }
 
             *slot_out += 1;
-        }
+        } 
 
         Ok(Response::new(()))
     }
@@ -212,7 +221,7 @@ impl Service for PaxosService {
         println!("Got a client request: {:?}", client_request);
 
         // buffer command
-        let mut command_buffer = self.command_buffer.lock().unwrap();
+        let mut command_buffer = self.command_buffer.lock().await;
         command_buffer.insert(client_request.sn, client_request.clone());
 
         // flush buffer if it's full
@@ -238,7 +247,7 @@ impl Service for PaxosService {
             });
 
             // send p2a to get trace chosen
-            let mut slot_in = self.slot_in.lock().unwrap();
+            let mut slot_in = self.slot_in.lock().await;
             let s_in = slot_in.clone();
             *slot_in += 1;  
 
@@ -282,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Leader will have default if of 0
     let leader = PaxosService { 
-        application: DashMap::new(), 
+        application: Arc::from(DashMap::new()), 
         log: DashMap::new(), 
         slot_votes: DashMap::new(), 
         slot_in: Arc::from(Mutex::new(0)),
@@ -296,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let follower1 = PaxosService { 
-        application: DashMap::new(), 
+        application: Arc::from(DashMap::new()), 
         log: DashMap::new(), 
         slot_votes: DashMap::new(), 
         slot_in: Arc::from(Mutex::new(0)),
