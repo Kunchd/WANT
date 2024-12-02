@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "server"
-path = "src/server.rs"
+name = "paxos-server"
+path = "src/paxos_server.rs"
 
 [[bin]]
 name = "worker"
