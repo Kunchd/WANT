@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use dashmap::DashSet;
 use derive_builder::Builder;
 use tokio::io::AsyncWriteExt;
 
@@ -12,7 +12,7 @@ use tonic::{Request, Response, Status};
 use tokio::fs::{File, OpenOptions};
 use std::net::SocketAddr;
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 
 pub mod sim {
     tonic::include_proto!("sim");
@@ -20,6 +20,9 @@ pub mod sim {
 
 #[derive(Debug, Parser)]
 struct Opt {
+    #[clap(long, short, default_value = "false", action = ArgAction::SetTrue)]
+    verbose: bool,
+
     #[clap(long)]
     worker_addr: SocketAddr,
 
@@ -31,7 +34,10 @@ struct Opt {
 pub struct WorkloadWorker {
     #[builder(default)]
     // Map from response to time (ms) received
-    responses: DashMap<String, u64>,
+    responses: DashSet<String>,
+
+    #[builder(default)]
+    verbose: bool,
 
     out_file: Arc<Mutex<File>>
 }
@@ -52,23 +58,24 @@ impl Worker for WorkloadWorker {
         response: Request<ClientResponse>
     ) -> Result<Response<()>, Status> {
         let client_response = response.into_inner();
-        println!("Worker received client response: {:?}", client_response);
+        if self.verbose {
+            println!("Worker received client response: {:?}", client_response);
+        }
 
         // // Record the time the response was received
-        // let time_received = std::time::SystemTime::now()
-        //     .duration_since(std::time::UNIX_EPOCH)
-        //     .expect("Time went backwards")
-        //     .as_millis() as u64;
+        let time_received = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as u64;
 
-        // let key = format!("{:?}", client_response);
-        // if !self.responses.contains_key(&key) {
-        //     self.responses.insert(key, time_received - client_response.time_sent);   
-        // }
-
-        // // append response to file
-        // let mut file = self.out_file.lock().await;
-        // let response_str = format!("{:?},{}\n", client_response, time_received);
-        // file.write_all(response_str.as_bytes()).await.expect("Failed to write to file");
+        let key = format!("{:?}", client_response);
+        if !self.responses.contains(&key) {
+            self.responses.insert(key);
+            // append response to file
+            let mut file = self.out_file.lock().await;
+            let response_str = format!("{:?},{}\n", client_response, time_received - client_response.time_sent);
+            file.write_all(response_str.as_bytes()).await.expect("Failed to write to file");
+        }        
 
         Ok(Response::new(()))
     }
@@ -90,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker = WorkloadWorkerBuilder::default()
         .out_file(out_file)
+        .verbose(opt.verbose)
         .build()?;
 
     Server::builder()

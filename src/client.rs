@@ -36,26 +36,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clients.push(ServiceClient::connect(format!("http://{}", server_addr)).await?);
     }
 
-    // send a put and get request to each server
     let clients_len = clients.len();
-    for (i, client) in clients.iter_mut().enumerate() {
-        let put_request = Request::new(ClientRequest {
-            key: String::from("a"),
-            value: String::from("x"),
-            sn: i as u32,
-            worker_addr: opt.worker_addr.to_string(),
-            time_sent: 0,
-        });
-        client.handle_client_request(put_request).await?;
 
-        let get_request = Request::new(ClientRequest {
-            key: String::from("a"),
-            value: String::from(""),
-            sn: (i + clients_len) as u32, 
+    // For each message, generate a random key and send a put request to a random server
+    for i in 1..=opt.messages {
+        let key = rand::thread_rng().gen_range(0..opt.num_keys);
+        let value = rand::thread_rng().gen_range(1e7..1e10);
+        let server = rand::thread_rng().gen_range(0..clients_len);
+        let put_request = Request::new(ClientRequest {
+            key: key.to_string(),
+            value: value.to_string(),
+            sn: i,
             worker_addr: opt.worker_addr.to_string(),
-            time_sent: 0,
+            time_sent: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u64,
         });
-        client.handle_client_request(get_request).await?;
+        clients[server].handle_client_request(put_request).await?;
     }
     
     Ok(())

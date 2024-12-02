@@ -6,9 +6,9 @@ To run client, use `cargo run --bin client -- --server-addr <addr> --worker-addr
 
 To run Paxos servers
 ```
-cargo run --bin paxos-server -- --server-addr 127.0.0.1:50050 --follower-addrs 127.0.0.1:50051
-cargo run --bin worker -- --worker-addr 127.0.0.1:60000
-cargo run --bin client -- --server-addrs 127.0.0.1:50050 --worker-addr 127.0.0.1:60000
+cargo run --bin paxos-server -- --server-addr 127.0.0.1:50050 --follower-addrs 127.0.0.1:50051 127.0.0.1:50052
+cargo run --bin worker -- --worker-addr 127.0.0.1:60000 --out ./data/test.log
+cargo run --bin client -- --server-addrs 127.0.0.1:50050 --worker-addr 127.0.0.1:60000 -m 10 -n 10
 ```
 
 To run Mencius servers
