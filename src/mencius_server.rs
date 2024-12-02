@@ -14,7 +14,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use sim::service_server::{Service, ServiceServer};
 use sim::{ClientResponse, P2a, P2b};
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 
 pub mod sim {
     tonic::include_proto!("sim");
@@ -22,6 +22,9 @@ pub mod sim {
 
 #[derive(Debug, Parser)]
 struct Opt {
+    #[clap(long, short, default_value = "false", action = ArgAction::SetTrue)]
+    verbose: bool,
+
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ' ')]
     server_addrs: Vec<SocketAddr>
 }
@@ -44,7 +47,6 @@ impl Eq for ClientRequest {}
 
 impl PartialOrd for ClientRequest {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        println!("Returning partial cmp: {:?}", self.sn.partial_cmp(&other.sn));
         self.sn.partial_cmp(&other.sn)
     }
 }
@@ -83,6 +85,9 @@ pub struct MenciusService {
     server_id: u32,
     server_addrs: Vec<SocketAddr>,
     server_addr_map: DashMap<u32, SocketAddr>,
+
+    // for testing
+    verbose: bool
 }
 
 impl MenciusService {
@@ -177,7 +182,9 @@ impl Service for MenciusService {
         p2a: Request<P2a>
     ) -> Result<Response<()>, Status> {
         let p2a = p2a.into_inner();
-        println!("Server: {} Got a p2a for slot {} from server {}", self.server_id, p2a.slot_num, p2a.server_id);
+        if self.verbose {
+            println!("Server: {} Got a p2a for slot {} from server {}", self.server_id, p2a.slot_num, p2a.server_id);
+        }
 
         // add to seen slots
         self.log.insert(p2a.slot_num, bincode::deserialize(&p2a.data).unwrap());
@@ -200,7 +207,9 @@ impl Service for MenciusService {
         p2b: Request<P2b>
     ) -> Result<Response<()>, Status> {
         let p2b = p2b.into_inner();
-        println!("Server {} Got a p2b for slot {} from server {}", self.server_id, p2b.slot_num, p2b.server_id);
+        if self.verbose {
+            println!("Server {} Got a p2b for slot {} from server {}", self.server_id, p2b.slot_num, p2b.server_id);
+        }
 
         // obtain locks in correct ordering
         let slot_in = self.slot_in.lock().await;
@@ -239,7 +248,9 @@ impl Service for MenciusService {
         request: Request<sim::ClientRequest>
     ) -> Result<Response<()>, Status> {
         let client_request = ClientRequest::try_from(request.into_inner()).unwrap();
-        println!("Server {} Got a client request: {:?}", self.server_id, client_request);
+        if self.verbose {
+            println!("Server {} Got a client request: {:?}", self.server_id, client_request);
+        }
 
         let server_id = self.server_id;
 
@@ -247,7 +258,6 @@ impl Service for MenciusService {
         let mut slot_in = self.slot_in.lock().await;
         let s_in = slot_in.clone();
         *slot_in += self.server_addrs.len() as u32;   // increment to next slot this server coordinates
-        // println!("Server {} setting slot_in to {}", server_id, slot_in);
 
         // update log
         self.log.insert(s_in, client_request.clone());
@@ -299,6 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             server_id: i as u32, 
             server_addrs: opt.server_addrs.clone(),
             server_addr_map: addr_map.clone(),
+            verbose: opt.verbose
         }));
     });
 

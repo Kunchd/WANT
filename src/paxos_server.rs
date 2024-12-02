@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use sim::service_client::ServiceClient;
 use sim::worker_client::WorkerClient;
 
-use tokio::join;
 use tokio::task::JoinSet;
 use tokio::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
@@ -15,7 +14,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use sim::service_server::{Service, ServiceServer};
 use sim::{ClientResponse, P2a, P2b};
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 
 pub mod sim {
     tonic::include_proto!("sim");
@@ -23,6 +22,9 @@ pub mod sim {
 
 #[derive(Debug, Parser)]
 struct Opt {
+    #[clap(long, short, default_value = "false", action = ArgAction::SetTrue)]
+    verbose: bool,
+
     #[clap(long)]
     server_addr: SocketAddr,
     
@@ -48,7 +50,6 @@ impl Eq for ClientRequest {}
 
 impl PartialOrd for ClientRequest {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        println!("Returning partial cmp: {:?}", self.sn.partial_cmp(&other.sn));
         self.sn.partial_cmp(&other.sn)
     }
 }
@@ -90,7 +91,10 @@ pub struct PaxosService {
 
     // logic for tribble
     command_buffer: Arc<Mutex<BTreeMap<u32, ClientRequest>>>,
-    buffer_limit: usize
+    buffer_limit: usize,
+
+    // for test
+    verbose: bool
 }
 
 impl PaxosService {
@@ -127,7 +131,9 @@ impl Service for PaxosService {
         p2a: Request<P2a>
     ) -> Result<Response<()>, Status> {
         let p2a = p2a.into_inner();
-        println!("Server: {} Got a p2a for slot {}", self.server_id, p2a.slot_num);
+        if self.verbose {
+            println!("Server {} Got a p2a for slot {}", self.server_id, p2a.slot_num);
+        }
 
         
         let response = P2b {
@@ -148,7 +154,9 @@ impl Service for PaxosService {
         p2b: Request<P2b>
     ) -> Result<Response<()>, Status> {
         let p2b = p2b.into_inner();
-        println!("Server {} Got a p2b for slot {} from server {}", self.server_id, p2b.slot_num, p2b.server_id);
+        if self.verbose {
+            println!("Server {} Got a p2b for slot {} from server {}", self.server_id, p2b.slot_num, p2b.server_id);
+        }
 
         // obtain locks in correct ordering
         let slot_in = self.slot_in.lock().await;
@@ -203,7 +211,9 @@ impl Service for PaxosService {
         request: Request<sim::ClientRequest>
     ) -> Result<Response<()>, Status> {
         let client_request = ClientRequest::try_from(request.into_inner()).unwrap();
-        println!("Got a client request: {:?}", client_request);
+        if self.verbose {
+            println!("Server {} Got a client request: {:?}", self.server_id, client_request);
+        }
 
         // buffer command
         let mut command_buffer = self.command_buffer.lock().await;
@@ -211,7 +221,6 @@ impl Service for PaxosService {
 
         // flush buffer if it's full
         if command_buffer.len() >= self.buffer_limit {
-            println!("Server {} Flushing buffer", self.server_id);
             // Create execution trace according the ordering edge concept in tribble
             let mut trace: Vec<HashMap<String, ClientRequest>> = Vec::new();
 
@@ -277,8 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr_map.insert((i + 1) as u32, addr);
     });
 
-    // Leader will have default if of 0
-    let leader = PaxosService { 
+    let mut servers = Vec::new();
+
+    // leader will have default id of 0
+    servers.push(ServiceServer::new(PaxosService { 
         application: Arc::from(DashMap::new()), 
         log: DashMap::new(), 
         slot_votes: DashMap::new(), 
@@ -289,32 +300,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server_addr_map: addr_map.clone(),
 
         command_buffer: Arc::from(Mutex::new(BTreeMap::new())),
-        buffer_limit: 2
-    };
+        buffer_limit: 2,
+        verbose: opt.verbose
+    }));
 
-    let follower1 = PaxosService { 
-        application: Arc::from(DashMap::new()), 
-        log: DashMap::new(), 
-        slot_votes: DashMap::new(), 
-        slot_in: Arc::from(Mutex::new(0)),
-        slot_out: Arc::from(Mutex::new(0)), 
-        server_id: 1, 
-        follower_addrs: Vec::new(),
-        server_addr_map: addr_map.clone(),
+    opt.follower_addrs.iter().enumerate().for_each(|(i, _)| {
+        servers.push(ServiceServer::new(
+            PaxosService {
+                    application: Arc::from(DashMap::new()), 
+                    log: DashMap::new(), 
+                    slot_votes: DashMap::new(), 
+                    slot_in: Arc::from(Mutex::new(0)),
+                    slot_out: Arc::from(Mutex::new(0)), 
+                    server_id: (i + 1) as u32, 
+                    follower_addrs: Vec::new(),
+                    server_addr_map: addr_map.clone(),
 
-        command_buffer: Arc::from(Mutex::new(BTreeMap::new())),
-        buffer_limit: 0
-    };
+                    command_buffer: Arc::from(Mutex::new(BTreeMap::new())),
+                    buffer_limit: 0,
+                    verbose: opt.verbose
+                }
+        ));
+    });
 
-    let (_, _) = join!(
-        Server::builder()
-        .add_service(ServiceServer::new(leader))
-        .serve(opt.server_addr),
+    let mut server_tasks = JoinSet::new();
+    servers.iter().enumerate().for_each(|(id, server)| {
+        let addr = addr_map.get(&(id as u32)).unwrap().clone();
+        let server = server.clone();
+        server_tasks.spawn(async move {
+            Server::builder()
+            .add_service(server)
+            .serve(addr).await.expect("Failed to start server");
+        });
+    });
 
-        Server::builder()
-        .add_service(ServiceServer::new(follower1))
-        .serve(opt.follower_addrs.get(0).unwrap().clone())
-    );
+    while let Some(res) = server_tasks.join_next().await {
+        res.expect("Server failed");
+    }
 
     Ok(())
 }
