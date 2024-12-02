@@ -694,6 +694,7 @@ dependencies = [
  "dashmap",
  "derive_builder",
  "prost",
+ "rand",
  "serde",
  "serde_json",
  "thiserror",

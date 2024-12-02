@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use sim::service_client::ServiceClient;
 use sim::ClientRequest;
 
+use rand::Rng;
 use tonic::Request;
 
 use clap::Parser;
@@ -13,7 +14,13 @@ struct Opt {
     server_addrs: Vec<SocketAddr>,
 
     #[clap(long)]
-    worker_addr: SocketAddr
+    worker_addr: SocketAddr,
+
+    #[clap(long, short)]
+    messages: u32,
+
+    #[clap(long, short)]
+    num_keys: u32
 }
 
 pub mod sim {
@@ -36,7 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             key: String::from("a"),
             value: String::from("x"),
             sn: i as u32,
-            worker_addr: opt.worker_addr.to_string()
+            worker_addr: opt.worker_addr.to_string(),
+            time_sent: 0,
         });
         client.handle_client_request(put_request).await?;
 
@@ -44,7 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             key: String::from("a"),
             value: String::from(""),
             sn: (i + clients_len) as u32, 
-            worker_addr: opt.worker_addr.to_string()
+            worker_addr: opt.worker_addr.to_string(),
+            time_sent: 0,
         });
         client.handle_client_request(get_request).await?;
     }

@@ -31,9 +31,11 @@ message ClientRequest {
     string value = 2;
     uint32 sn = 3;
     string worker_addr = 4;
+    uint64 time_sent = 5;
 }
 
 message ClientResponse {
     string result = 1;
     uint32 sn = 2;
+    uint64 time_sent = 3;
 }

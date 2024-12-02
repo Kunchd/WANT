@@ -37,7 +37,8 @@ pub struct ClientRequest {
     pub key: String,
     pub value: String,
     pub sn: u32,
-    pub worker_addr: SocketAddr
+    pub worker_addr: SocketAddr,
+    time_sent: u64
 }
 
 impl PartialEq for ClientRequest {
@@ -62,7 +63,8 @@ impl TryFrom<sim::ClientRequest> for ClientRequest {
             key: value.key, 
             value: value.value, 
             sn: value.sn, 
-            worker_addr: value.worker_addr.parse().unwrap()
+            worker_addr: value.worker_addr.parse().unwrap(),
+            time_sent: value.time_sent
         })
     }
 }
@@ -73,7 +75,8 @@ impl Into<sim::ClientRequest> for ClientRequest {
             key: self.key,
             value: self.value,
             sn: self.sn,
-            worker_addr: self.worker_addr.to_string()
+            worker_addr: self.worker_addr.to_string(),
+            time_sent: self.time_sent
         }
     }
 }
@@ -179,7 +182,8 @@ impl Service for PaxosService {
                         let request = request.clone();
                         let mut client_response = ClientResponse {
                             result : String::from(""),
-                            sn: request.sn
+                            sn: request.sn,
+                            time_sent: request.time_sent
                         };
 
                         if request.value == "" {
